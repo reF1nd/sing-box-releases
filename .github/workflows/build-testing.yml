@@ -36,8 +36,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  GO_VERSION: '1.26.7'
-  GO_VERSION_DARWIN: '1.26.7'
+  GO_VERSION: '1.26.8'
+  GO_VERSION_DARWIN: '1.26.8'
 
 jobs:
   resolve_source:
@@ -440,13 +440,15 @@ jobs:
             TAGS=$(cat sing-box/release/DEFAULT_BUILD_TAGS_WINDOWS)
           elif [[ "${{ matrix.naive }}" == "true" ]]; then
             TAGS=$(cat sing-box/release/DEFAULT_BUILD_TAGS)
+          elif [[ "${{ matrix.legacy_macos }}" == "true" ]]; then
+            TAGS=$(sed 's/,with_usbip//' sing-box/release/DEFAULT_BUILD_TAGS_OTHERS)
           else
             TAGS=$(cat sing-box/release/DEFAULT_BUILD_TAGS_OTHERS)
           fi
           if [[ "${{ matrix.naive }}" == "true" && "${TAGS}" != *with_naive_outbound* ]]; then
             TAGS="${TAGS},with_naive_outbound"
           fi
-          if [[ -d sing-box/common/ebpf && ("${{ matrix.platform }}" == "linux" || "${{ matrix.platform }}" == "android") && "${TAGS}" != *with_ebpf* ]]; then
+          if [[ -f sing-box/include/ebpf.go && ("${{ matrix.platform }}" == "linux" || "${{ matrix.platform }}" == "android") && "${TAGS}" != *with_ebpf* ]]; then
             TAGS="${TAGS},with_ebpf"
           fi
           ARCHIVE_SUFFIX=""
@@ -822,7 +824,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: reF1nd/sing-box-for-desktop
-          ref: reF1nd-main
+          ref: reF1nd-dev
           path: sing-box-for-desktop
           submodules: recursive
 
@@ -967,7 +969,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: reF1nd/sing-box-for-desktop
-          ref: reF1nd-main
+          ref: reF1nd-dev
           path: sing-box-for-desktop
           submodules: recursive
 
