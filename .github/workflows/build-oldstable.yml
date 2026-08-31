@@ -1,4 +1,4 @@
-name: Build sing-box oldstable (Android, Windows, Linux, Darwin)
+name: Build sing-box oldstable (Android and CLI)
 
 on:
   workflow_dispatch:
@@ -10,15 +10,6 @@ on:
         description: 'Optional commit hash to build from (overrides version tag)'
         required: false
         default: ''
-      publish_release:
-        description: 'Publish type after build'
-        required: false
-        type: choice
-        options:
-          - none
-          - pre-release
-          - release
-        default: none
       build_cli:
         description: 'Build CLI'
         required: false
@@ -30,48 +21,149 @@ on:
         type: boolean
         default: true
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.version }}
+  cancel-in-progress: true
+
 env:
-  GO_VERSION: '~1.25.8'
-  TAGS_COMMON: 'with_gvisor,with_quic,with_wireguard,with_utls,with_clash_api,with_tailscale'
-  TAGS_CLI_EXTRA: 'with_dhcp,with_acme'
-  TAGS_SFA_EXTRA: 'with_conntrack'
+  GO_VERSION: '~1.25.12'
+  GO_VERSION_DARWIN: '^1.25.3'
 
 jobs:
+  resolve_source:
+    name: Resolve sing-box source
+    runs-on: ubuntu-latest
+    outputs:
+      source_sha: ${{ steps.source.outputs.source_sha }}
+    steps:
+      - name: Checkout sing-box
+        uses: actions/checkout@v6
+        with:
+          repository: reF1nd/sing-box
+          ref: ${{ inputs.commit_hash != '' && inputs.commit_hash || format('v{0}', inputs.version) }}
+          path: sing-box
+          fetch-depth: 1
+
+      - name: Resolve source commit
+        id: source
+        run: |
+          set -euo pipefail
+          if [[ ! "$INPUT_VERSION" =~ ^[0-9A-Za-z][0-9A-Za-z.+-]*$ ]]; then
+            echo "invalid version: $INPUT_VERSION" >&2
+            exit 1
+          fi
+          source_sha=$(git -C sing-box rev-parse HEAD)
+          echo "source_sha=${source_sha}" >> "$GITHUB_OUTPUT"
+          echo "Resolved sing-box source: ${source_sha}"
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+
   build_cli:
     if: ${{ github.event.inputs.build_cli == 'true' }}
-    name: Build CLI ${{ matrix.platform }}-${{ matrix.arch }}
+    name: Build CLI ${{ matrix.platform }}-${{ matrix.arch }} ${{ matrix.variant || matrix.legacy_name }}
     runs-on: ${{ matrix.os }}
+    needs: resolve_source
     strategy:
       fail-fast: false
+      max-parallel: 13
       matrix:
         include:
           - platform: linux
             arch: arm64
-            os: ubuntu-latest
+            os: ubuntu-26.04
             goos: linux
             goarch: arm64
             goamd64: ''
             binary: sing-box
-            extra_tags: ''
-            artifact_name: binary-linux-arm64
+            variant: purego
+            artifact_name: binary-linux-arm64-purego
+            naive: true
+          - platform: linux
+            arch: arm64
+            os: ubuntu-26.04
+            goos: linux
+            goarch: arm64
+            goamd64: ''
+            binary: sing-box
+            variant: glibc
+            artifact_name: binary-linux-arm64-glibc
+            cgo: '1'
+            naive: true
+          - platform: linux
+            arch: arm64
+            os: ubuntu-26.04
+            goos: linux
+            goarch: arm64
+            goamd64: ''
+            binary: sing-box
+            variant: musl
+            artifact_name: binary-linux-arm64-musl
+            cgo: '1'
+            naive: true
           - platform: linux
             arch: amd64
-            os: ubuntu-latest
+            os: ubuntu-26.04
             goos: linux
             goarch: amd64
             goamd64: v1
             binary: sing-box
-            extra_tags: ''
-            artifact_name: binary-linux-amd64
+            variant: purego
+            artifact_name: binary-linux-amd64-purego
+            naive: true
+          - platform: linux
+            arch: amd64
+            os: ubuntu-26.04
+            goos: linux
+            goarch: amd64
+            goamd64: v1
+            binary: sing-box
+            variant: glibc
+            artifact_name: binary-linux-amd64-glibc
+            cgo: '1'
+            naive: true
+          - platform: linux
+            arch: amd64
+            os: ubuntu-26.04
+            goos: linux
+            goarch: amd64
+            goamd64: v1
+            binary: sing-box
+            variant: musl
+            artifact_name: binary-linux-amd64-musl
+            cgo: '1'
+            naive: true
           - platform: linux
             arch: amd64v3
-            os: ubuntu-latest
+            os: ubuntu-26.04
             goos: linux
             goarch: amd64
             goamd64: v3
             binary: sing-box
-            extra_tags: ''
-            artifact_name: binary-linux-amd64v3
+            variant: purego
+            artifact_name: binary-linux-amd64v3-purego
+            naive: true
+          - platform: linux
+            arch: amd64v3
+            os: ubuntu-26.04
+            goos: linux
+            goarch: amd64
+            goamd64: v3
+            binary: sing-box
+            variant: glibc
+            artifact_name: binary-linux-amd64v3-glibc
+            cgo: '1'
+            naive: true
+          - platform: linux
+            arch: amd64v3
+            os: ubuntu-26.04
+            goos: linux
+            goarch: amd64
+            goamd64: v3
+            binary: sing-box
+            variant: musl
+            artifact_name: binary-linux-amd64v3-musl
+            cgo: '1'
+            naive: true
           - platform: windows
             arch: arm64
             os: windows-latest
@@ -79,8 +171,9 @@ jobs:
             goarch: arm64
             goamd64: ''
             binary: sing-box.exe
-            extra_tags: ''
+            variant: purego
             artifact_name: binary-windows-arm64
+            naive: true
           - platform: windows
             arch: amd64
             os: windows-latest
@@ -88,8 +181,9 @@ jobs:
             goarch: amd64
             goamd64: v1
             binary: sing-box.exe
-            extra_tags: ''
+            variant: purego
             artifact_name: binary-windows-amd64
+            naive: true
           - platform: windows
             arch: amd64v3
             os: windows-latest
@@ -97,8 +191,9 @@ jobs:
             goarch: amd64
             goamd64: v3
             binary: sing-box.exe
-            extra_tags: ''
+            variant: purego
             artifact_name: binary-windows-amd64v3
+            naive: true
           - platform: darwin
             arch: arm64
             os: macos-latest
@@ -106,8 +201,9 @@ jobs:
             goarch: arm64
             goamd64: ''
             binary: sing-box
-            extra_tags: ''
             artifact_name: binary-darwin-arm64
+            cgo: '1'
+            naive: true
           - platform: darwin
             arch: amd64
             os: macos-latest
@@ -115,8 +211,9 @@ jobs:
             goarch: amd64
             goamd64: v1
             binary: sing-box
-            extra_tags: ''
             artifact_name: binary-darwin-amd64
+            cgo: '1'
+            naive: true
           - platform: darwin
             arch: amd64v3
             os: macos-latest
@@ -124,67 +221,87 @@ jobs:
             goarch: amd64
             goamd64: v3
             binary: sing-box
-            extra_tags: ''
             artifact_name: binary-darwin-amd64v3
-            cgo: '0'
-            cc_triple: ''
+            cgo: '1'
+            naive: true
+          - platform: darwin
+            arch: amd64
+            os: macos-latest
+            goos: darwin
+            goarch: amd64
+            goamd64: v1
+            binary: sing-box
+            artifact_name: binary-darwin-amd64-legacy-macos-10.13
+            legacy_macos: true
+            legacy_name: macos-10.13
+            macos_deployment_target: '10.13'
+            cgo: '1'
+            naive: false
           - platform: android
             arch: 386
-            os: ubuntu-latest
+            os: ubuntu-26.04
             goos: android
             goarch: 386
             goamd64: ''
             binary: sing-box
-            extra_tags: ''
             artifact_name: binary-android-386
             cgo: '1'
-            cc_triple: 'i686-linux-android21'
+            cc_triple: 'i686-linux-android23'
+            naive: true
           - platform: android
             arch: amd64
-            os: ubuntu-latest
+            os: ubuntu-26.04
             goos: android
             goarch: amd64
             goamd64: v1
             binary: sing-box
-            extra_tags: ''
             artifact_name: binary-android-amd64
             cgo: '1'
-            cc_triple: 'x86_64-linux-android21'
+            cc_triple: 'x86_64-linux-android23'
+            naive: true
           - platform: android
             arch: amd64v3
-            os: ubuntu-latest
+            os: ubuntu-26.04
             goos: android
             goarch: amd64
             goamd64: v3
             binary: sing-box
-            extra_tags: ''
             artifact_name: binary-android-amd64v3
             cgo: '1'
-            cc_triple: 'x86_64-linux-android21'
+            cc_triple: 'x86_64-linux-android23'
+            naive: true
           - platform: android
             arch: arm
-            os: ubuntu-latest
+            os: ubuntu-26.04
             goos: android
             goarch: arm
             goamd64: ''
             binary: sing-box
-            extra_tags: ''
             artifact_name: binary-android-arm
             cgo: '1'
-            cc_triple: 'armv7a-linux-androideabi21'
+            cc_triple: 'armv7a-linux-androideabi23'
+            naive: true
           - platform: android
             arch: arm64
-            os: ubuntu-latest
+            os: ubuntu-26.04
             goos: android
             goarch: arm64
             goamd64: ''
             binary: sing-box
-            extra_tags: ''
             artifact_name: binary-android-arm64
             cgo: '1'
-            cc_triple: 'aarch64-linux-android21'
+            cc_triple: 'aarch64-linux-android23'
+            naive: true
     steps:
+      - name: Setup Go for Darwin
+        if: matrix.platform == 'darwin' && matrix.legacy_macos != true
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION_DARWIN }}
+          cache: false
+
       - name: Setup Go
+        if: matrix.platform != 'darwin'
         uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
@@ -194,21 +311,61 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: reF1nd/sing-box
-          ref: ${{ github.event.inputs.commit_hash != '' && github.event.inputs.commit_hash || format('v{0}', github.event.inputs.version) }}
+          ref: ${{ needs.resolve_source.outputs.source_sha }}
           path: sing-box
-          fetch-depth: 0
+          fetch-depth: 1
 
-      - name: Recreate temporary tag
-        if: github.event.inputs.commit_hash != ''
+      - name: Set build tag
         shell: bash
         run: |
           set -xeuo pipefail
           cd sing-box
           TAG="v${{ github.event.inputs.version }}"
-          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
-            git tag -d "${TAG}"
-          fi
-          git tag "${TAG}" "${{ github.event.inputs.commit_hash }}"
+          git tag -f "${TAG}" "${{ needs.resolve_source.outputs.source_sha }}"
+
+      - name: Cache Go for macOS 10.13
+        if: matrix.legacy_macos == true
+        id: cache-go-for-macos1013
+        uses: actions/cache@v5
+        with:
+          path: ~/go/go_osx
+          key: go-osx-macos1013-${{ hashFiles('sing-box/.github/setup_go_for_macos1013.sh') }}
+
+      - name: Setup Go for macOS 10.13
+        if: matrix.legacy_macos == true && steps.cache-go-for-macos1013.outputs.cache-hit != 'true'
+        run: sing-box/.github/setup_go_for_macos1013.sh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Activate Go for macOS 10.13
+        if: matrix.legacy_macos == true
+        run: |
+          echo "PATH=$HOME/go/go_osx/bin:$PATH" >> "$GITHUB_ENV"
+          echo "GOROOT=$HOME/go/go_osx" >> "$GITHUB_ENV"
+
+      - name: Cache Go modules for Darwin
+        if: matrix.platform == 'darwin'
+        uses: actions/cache@v5
+        with:
+          path: ~/go/pkg/mod
+          key: go-mod-macos-${{ hashFiles('sing-box/go.sum') }}
+          restore-keys: go-mod-macos-
+
+      - name: Restore Go modules for Linux and Android
+        if: matrix.platform == 'linux' || matrix.platform == 'android'
+        uses: actions/cache/restore@v5
+        with:
+          path: ~/go/pkg/mod
+          key: go-mod-linux-${{ hashFiles('sing-box/go.sum') }}
+          restore-keys: go-mod-linux-
+
+      - name: Cache Go modules for Windows
+        if: matrix.platform == 'windows'
+        uses: actions/cache@v5
+        with:
+          path: ~/go/pkg/mod
+          key: go-mod-windows-${{ hashFiles('sing-box/go.sum') }}
+          restore-keys: go-mod-windows-
 
       - name: Setup Android NDK
         if: matrix.platform == 'android'
@@ -218,21 +375,96 @@ jobs:
           ndk-version: r28
           #local-cache: true
 
+      - name: Clone cronet-go
+        if: matrix.variant == 'glibc' || matrix.variant == 'musl'
+        shell: bash
+        run: |
+          set -xeuo pipefail
+          CRONET_GO_VERSION=$(cat sing-box/.github/CRONET_GO_VERSION)
+          git init ~/cronet-go
+          git -C ~/cronet-go remote add origin https://github.com/sagernet/cronet-go.git
+          git -C ~/cronet-go sparse-checkout set --no-cone '/*' '!/lib'
+          git -C ~/cronet-go fetch --depth=1 --filter=blob:none origin "$CRONET_GO_VERSION"
+          git -C ~/cronet-go checkout FETCH_HEAD
+          git -C ~/cronet-go submodule update --init --recursive --depth=1
+
+      - name: Regenerate Debian keyring
+        if: matrix.variant == 'glibc' || matrix.variant == 'musl'
+        shell: bash
+        run: |
+          set -xeuo pipefail
+          rm -f ~/cronet-go/naiveproxy/src/build/linux/sysroot_scripts/keyring.gpg
+          cd ~/cronet-go
+          GPG_TTY=/dev/null ./naiveproxy/src/build/linux/sysroot_scripts/generate_keyring.sh
+
+      - name: Download Chromium toolchain
+        if: matrix.variant == 'glibc' || matrix.variant == 'musl'
+        shell: bash
+        run: |
+          set -xeuo pipefail
+          cd ~/cronet-go
+          if [[ "${{ matrix.variant }}" == "musl" ]]; then
+            go run ./cmd/build-naive --target=linux/${{ matrix.goarch }} --libc=musl download-toolchain
+          else
+            go run ./cmd/build-naive --target=linux/${{ matrix.goarch }} download-toolchain
+          fi
+
+      - name: Set Chromium toolchain environment
+        if: matrix.variant == 'glibc' || matrix.variant == 'musl'
+        shell: bash
+        run: |
+          set -xeuo pipefail
+          cd ~/cronet-go
+          if [[ "${{ matrix.variant }}" == "musl" ]]; then
+            go run ./cmd/build-naive --target=linux/${{ matrix.goarch }} --libc=musl env >> $GITHUB_ENV
+          else
+            go run ./cmd/build-naive --target=linux/${{ matrix.goarch }} env >> $GITHUB_ENV
+          fi
+
       - name: Compute build environment
         id: env
         shell: bash
         run: |
-          TAGS="${TAGS_COMMON},${TAGS_CLI_EXTRA}${{ matrix.extra_tags }}"
-          CGO="${{ matrix.cgo || '0' }}"
+          set -euo pipefail
+          if [[ "${{ matrix.platform }}" == "windows" ]]; then
+            TAGS=$(cat sing-box/release/DEFAULT_BUILD_TAGS_WINDOWS)
+          elif [[ "${{ matrix.naive }}" == "true" ]]; then
+            TAGS=$(cat sing-box/release/DEFAULT_BUILD_TAGS)
+          else
+            TAGS=$(cat sing-box/release/DEFAULT_BUILD_TAGS_OTHERS)
+          fi
+          if [[ "${{ matrix.naive }}" == "true" && "${TAGS}" != *with_naive_outbound* ]]; then
+            TAGS="${TAGS},with_naive_outbound"
+          fi
+          ARCHIVE_SUFFIX=""
+
+          case "${{ matrix.variant }}" in
+            'purego')
+              if [[ "${TAGS}" != *with_purego* ]]; then
+                TAGS="${TAGS},with_purego"
+              fi
+              ;;
+            'glibc')
+              ARCHIVE_SUFFIX="-glibc"
+              ;;
+            'musl')
+              TAGS="${TAGS},with_musl"
+              ARCHIVE_SUFFIX="-musl"
+              ;;
+          esac
+          if [[ "${{ matrix.variant }}" == "purego" && "${{ matrix.platform }}" == "linux" ]]; then
+              ARCHIVE_SUFFIX="-purego"
+          fi
 
           echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
-          echo "cgo=${CGO}" >> "$GITHUB_OUTPUT"
+          echo "ldflags=$(cat sing-box/release/LDFLAGS)" >> "$GITHUB_OUTPUT"
+          echo "archive_suffix=${ARCHIVE_SUFFIX}" >> "$GITHUB_OUTPUT"
 
           echo "--- Build Environment ---"
           echo "Platform: ${{ matrix.platform }}"
           echo "Arch: ${{ matrix.arch }}"
           echo "Tags: ${TAGS}"
-          echo "CGO: ${CGO}"
+          echo "Archive suffix: ${ARCHIVE_SUFFIX}"
 
       - name: Build
         shell: bash
@@ -245,24 +477,58 @@ jobs:
           fi
           go build -v -trimpath -o "dist/${{ matrix.binary }}" \
             -tags "${{ steps.env.outputs.tags }}" \
-            -ldflags '-s -buildid= -X github.com/sagernet/sing-box/constant.Version=${{ github.event.inputs.version }}' \
+            -ldflags "-X github.com/sagernet/sing-box/constant.Version=${{ github.event.inputs.version }} ${LDFLAGS_SHARED} -s -w -buildid=" \
             ./cmd/sing-box
         env:
-          CGO_ENABLED: ${{ steps.env.outputs.cgo }}
+          LDFLAGS_SHARED: ${{ steps.env.outputs.ldflags }}
+          CGO_ENABLED: ${{ matrix.cgo || '0' }}
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           GOAMD64: ${{ matrix.goamd64 }}
+          MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macos_deployment_target }}
+
+      - name: Extract libcronet.so
+        if: matrix.variant == 'purego' && matrix.platform == 'linux'
+        shell: bash
+        run: |
+          set -xeuo pipefail
+          CRONET_GO_VERSION=$(cat sing-box/.github/CRONET_GO_VERSION)
+          LIBRARY_PATH="lib/linux_${{ matrix.goarch }}/libcronet.so"
+          git init "$RUNNER_TEMP/cronet-go-lib"
+          git -C "$RUNNER_TEMP/cronet-go-lib" remote add origin https://github.com/sagernet/cronet-go.git
+          git -C "$RUNNER_TEMP/cronet-go-lib" sparse-checkout set --no-cone "/$LIBRARY_PATH"
+          git -C "$RUNNER_TEMP/cronet-go-lib" fetch --depth=1 --filter=blob:none origin "$CRONET_GO_VERSION"
+          git -C "$RUNNER_TEMP/cronet-go-lib" checkout FETCH_HEAD
+          cp "$RUNNER_TEMP/cronet-go-lib/$LIBRARY_PATH" sing-box/dist/
+
+      - name: Extract libcronet.dll
+        if: matrix.variant == 'purego' && matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $CRONET_GO_VERSION = Get-Content sing-box/.github/CRONET_GO_VERSION
+          $LIBRARY_PATH = "lib/windows_${{ matrix.goarch }}/libcronet.dll"
+          git init "$env:RUNNER_TEMP/cronet-go-lib"
+          git -C "$env:RUNNER_TEMP/cronet-go-lib" remote add origin https://github.com/sagernet/cronet-go.git
+          git -C "$env:RUNNER_TEMP/cronet-go-lib" sparse-checkout set --no-cone "/$LIBRARY_PATH"
+          git -C "$env:RUNNER_TEMP/cronet-go-lib" fetch --depth=1 --filter=blob:none origin "$CRONET_GO_VERSION"
+          git -C "$env:RUNNER_TEMP/cronet-go-lib" checkout FETCH_HEAD
+          Copy-Item "$env:RUNNER_TEMP/cronet-go-lib/$LIBRARY_PATH" sing-box/dist
 
       - name: Archive (Linux)
         if: matrix.platform == 'linux'
+        shell: bash
         run: |
           cd sing-box/dist
-          DIR_NAME="sing-box-${{ github.event.inputs.version }}-linux-${{ matrix.arch }}"
+          DIR_NAME="sing-box-${{ github.event.inputs.version }}-linux-${{ matrix.arch }}${{ steps.env.outputs.archive_suffix }}"
           mkdir -p "$DIR_NAME"
           cp ../LICENSE "$DIR_NAME/"
           cp sing-box "$DIR_NAME/"
+          if [ -f libcronet.so ]; then
+              cp libcronet.so "${DIR_NAME}"
+          fi
           tar -czvf "$DIR_NAME.tar.gz" "$DIR_NAME"
           rm -rf "$DIR_NAME" sing-box
+          if [ -f libcronet.so ]; then rm -f libcronet.so; fi
 
       - name: Archive (Windows)
         if: matrix.platform == 'windows'
@@ -273,15 +539,22 @@ jobs:
           mkdir "$DIR_NAME"
           Copy-Item ../LICENSE "$DIR_NAME/"
           Copy-Item sing-box.exe "$DIR_NAME/"
+          if (Test-Path libcronet.dll) {
+              Copy-Item libcronet.dll "$DIR_NAME/"
+          }
           Compress-Archive -Path "$DIR_NAME" -DestinationPath "$DIR_NAME.zip"
           Remove-Item -Recurse "$DIR_NAME"
           Remove-Item sing-box.exe
+          if (Test-Path libcronet.dll) { Remove-Item libcronet.dll }
 
       - name: Archive (Darwin)
         if: matrix.platform == 'darwin'
         run: |
           cd sing-box/dist
           DIR_NAME="sing-box-${{ github.event.inputs.version }}-darwin-${{ matrix.arch }}"
+          if [[ -n "${{ matrix.legacy_name }}" ]]; then
+            DIR_NAME="${DIR_NAME}-legacy-${{ matrix.legacy_name }}"
+          fi
           mkdir -p "$DIR_NAME"
           cp ../LICENSE "$DIR_NAME/"
           cp sing-box "$DIR_NAME/"
@@ -305,18 +578,39 @@ jobs:
           name: ${{ matrix.artifact_name }}
           path: sing-box/dist/*
 
-  build_android:
+  build_android_library:
     if: ${{ github.event.inputs.build_android_gui == 'true' }}
-    name: Build Android
+    name: Build Android library (${{ matrix.go_arch }})
     runs-on: ubuntu-latest
-    env:
-      JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
+    needs: resolve_source
+    strategy:
+      fail-fast: false
+      matrix:
+        go_arch: ['386', amd64, arm, arm64]
     steps:
+      - name: Checkout sing-box
+        uses: actions/checkout@v6
+        with:
+          repository: reF1nd/sing-box
+          ref: ${{ needs.resolve_source.outputs.source_sha }}
+          path: sing-box
+          fetch-depth: 1
+
+      - name: Set build tag
+        run: git -C sing-box tag -f "v${{ github.event.inputs.version }}" "${{ needs.resolve_source.outputs.source_sha }}"
+
       - name: Setup Go
         uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: false
+
+      - name: Cache Go modules
+        uses: actions/cache@v5
+        with:
+          path: ~/go/pkg/mod
+          key: go-mod-linux-${{ hashFiles('sing-box/go.sum') }}
+          restore-keys: go-mod-linux-
 
       - name: Setup Android NDK
         id: setup-ndk
@@ -325,29 +619,56 @@ jobs:
           ndk-version: r28
 
       - name: Setup OpenJDK
-        run: |
-          sudo apt update && sudo apt install -y openjdk-17-jdk-headless
-          /usr/lib/jvm/java-17-openjdk-amd64/bin/java --version
+        uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5.6.0
+        with:
+          distribution: temurin
+          java-version: 17
 
+      - name: Build library
+        run: |
+          set -euo pipefail
+          cd sing-box
+          make lib_install
+          export PATH="$PATH:$(go env GOPATH)/bin"
+          go run ./cmd/internal/build_libbox -target android -platform android/${{ matrix.go_arch }}
+          mkdir -p "dist/${{ matrix.go_arch }}"
+          mv libbox.aar libbox-legacy.aar "dist/${{ matrix.go_arch }}"
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+
+      - name: Upload library
+        uses: actions/upload-artifact@v7
+        with:
+          name: android-library-${{ matrix.go_arch }}
+          path: sing-box/dist
+          compression-level: 0
+
+  build_android:
+    if: ${{ github.event.inputs.build_android_gui == 'true' }}
+    name: Build Android (${{ matrix.variant }})
+    runs-on: ubuntu-latest
+    needs: [resolve_source, build_android_library]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: other
+            task: :app:assembleOtherRelease
+            output: app/build/outputs/apk/other/release/*.apk
+          - variant: other-legacy
+            task: :app:assembleOtherLegacyRelease
+            output: app/build/outputs/apk/otherLegacy/release/*.apk
+    steps:
       - name: Checkout sing-box
         uses: actions/checkout@v6
         with:
           repository: reF1nd/sing-box
-          ref: ${{ github.event.inputs.commit_hash != '' && github.event.inputs.commit_hash || format('v{0}', github.event.inputs.version) }}
+          ref: ${{ needs.resolve_source.outputs.source_sha }}
           path: sing-box
-          fetch-depth: 0
+          fetch-depth: 1
 
-      - name: Recreate temporary tag
-        if: github.event.inputs.commit_hash != ''
-        shell: bash
-        run: |
-          set -xeuo pipefail
-          cd sing-box
-          TAG="v${{ github.event.inputs.version }}"
-          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
-            git tag -d "${TAG}"
-          fi
-          git tag "${TAG}" "${{ github.event.inputs.commit_hash }}"
+      - name: Set build tag
+        run: git -C sing-box tag -f "v${{ github.event.inputs.version }}" "${{ needs.resolve_source.outputs.source_sha }}"
 
       - name: Checkout sing-box-for-android
         uses: actions/checkout@v6
@@ -356,69 +677,86 @@ jobs:
           ref: reF1nd-oldstable
           path: sing-box-for-android
 
+      - name: Checkout submodule recursive
+        run: git -C sing-box-for-android submodule update --init --recursive -v
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+
+      - name: Restore Go modules
+        uses: actions/cache/restore@v5
+        with:
+          path: ~/go/pkg/mod
+          key: go-mod-linux-${{ hashFiles('sing-box/go.sum') }}
+          restore-keys: go-mod-linux-
+
+      - name: Cache Go tool builds
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/go-build
+          key: go-build-tools-linux-${{ hashFiles('sing-box/go.sum') }}
+          restore-keys: go-build-tools-linux-
+
+      - name: Setup Android NDK
+        id: setup-ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r28
+
+      - name: Setup OpenJDK
+        uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5.6.0
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v6.2.0
+        with:
+          cache-provider: basic
+
       - name: Update VERSION_NAME for temporary tag
         if: github.event.inputs.commit_hash != ''
-        shell: bash
         run: |
-          set -xeuo pipefail
-          FILE="sing-box-for-android/version.properties"
-          sed -i "s/^VERSION_NAME=.*/VERSION_NAME=${{ github.event.inputs.version }}/" "$FILE"
-          grep '^VERSION_NAME=' "$FILE"
+          set -euo pipefail
+          file="sing-box-for-android/version.properties"
+          sed -i "s/^VERSION_NAME=.*/VERSION_NAME=${{ github.event.inputs.version }}/" "$file"
+          grep '^VERSION_NAME=' "$file"
 
-      - name: Compute build tags
-        id: env
+      - name: Read version code from source
         run: |
-          TAGS="${TAGS_COMMON},${TAGS_SFA_EXTRA}"
-          echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
-          echo "Build tags: ${TAGS}"
+          version_code=$(grep '^VERSION_CODE=' sing-box-for-android/version.properties | cut -d'=' -f2)
+          echo "VERSION_CODE=${version_code}" >> "$GITHUB_ENV"
 
-      - name: Build library
+      - name: Download libraries
+        uses: actions/download-artifact@v8
+        with:
+          pattern: android-library-*
+          path: libbox-inputs
+          merge-multiple: true
+
+      - name: Merge libraries
         run: |
+          set -euo pipefail
           cd sing-box
-          make lib_install
-          export PATH="$PATH:$(go env GOPATH)/bin"
-          gomobile bind -v \
-            -target android \
-            -androidapi 21 \
-            -javapkg=io.nekohasekai \
-            -libname=box \
-            -trimpath \
-            -buildvcs=false \
-            -tags="${{ steps.env.outputs.tags }}" \
-            -ldflags="-X github.com/sagernet/sing-box/constant.Version=${{ github.event.inputs.version }} -s -w -buildid= -checklinkname=0" \
-            ./experimental/libbox
-        env:
-          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
-
-      - name: Verify libbox.aar
-        run: |
-          cd sing-box
-          if [ ! -f "libbox.aar" ]; then
-            echo "Error: libbox.aar not found!"
-            exit 1
-          fi
-          ls -lh libbox.aar
+          go run ./cmd/internal/merge_aar -output ../libbox.aar ../libbox-inputs/*/libbox.aar
+          go run ./cmd/internal/merge_aar -output ../libbox-legacy.aar ../libbox-inputs/*/libbox-legacy.aar
 
       - name: Prepare Android client
         run: |
           mkdir -p sing-box-for-android/app/libs
-          cp sing-box/libbox.aar sing-box-for-android/app/libs/
+          cp libbox.aar libbox-legacy.aar sing-box-for-android/app/libs/
 
       - name: Decode Keystore
-        run: |
-          echo "${{ secrets.RELEASE_KEYSTORE_FILE }}" | base64 -d > sing-box-for-android/app/release.keystore
-
-      - name: Gradle cache
-        uses: actions/cache@v5
-        with:
-          path: ~/.gradle
-          key: gradle-${{ hashFiles('**/*.gradle') }}
+        run: echo "${{ secrets.RELEASE_KEYSTORE_FILE }}" | base64 -d > sing-box-for-android/app/release.keystore
 
       - name: Build APK
         run: |
           cd sing-box-for-android
           chmod +x gradlew
-          ./gradlew :app:assembleOtherRelease \
+          ./gradlew --build-cache --parallel ${{ matrix.task }} \
             -Pandroid.injected.signing.store.file=$(pwd)/app/release.keystore \
             -Pandroid.injected.signing.store.password="${{ secrets.RELEASE_KEYSTORE_PASSWORD }}" \
             -Pandroid.injected.signing.key.alias="${{ secrets.RELEASE_KEY_ALIAS }}" \
@@ -426,144 +764,173 @@ jobs:
         env:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
 
+      - name: Prepare upload
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp sing-box-for-android/${{ matrix.output }} dist
+          if [[ "${{ matrix.variant }}" == "other" ]]; then
+            printf '{\n    "version_code": %s,\n    "version_name": "%s"\n}\n' \
+              "$VERSION_CODE" "${{ github.event.inputs.version }}" > dist/SFA-version-metadata.json
+            cat dist/SFA-version-metadata.json
+          fi
+
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
-          name: android-apk
-          path: |
-            sing-box-for-android/app/build/outputs/apk/other/release/*.apk
+          name: android-apk-${{ matrix.variant }}
+          path: dist
 
-  release:
-    name: Publish Release
+  finalize_build:
+    name: Finalize build artifacts
     runs-on: ubuntu-latest
-    needs: [build_cli, build_android]
-    if: ${{ always() && github.event.inputs.publish_release != 'none' && (github.event.inputs.build_cli == 'true' || github.event.inputs.build_android_gui == 'true') && (github.event.inputs.build_cli != 'true' || needs.build_cli.result == 'success') && (github.event.inputs.build_android_gui != 'true' || needs.build_android.result == 'success') }}
+    needs: [resolve_source, build_cli, build_android_library, build_android]
+    if: ${{ always() && needs.resolve_source.result == 'success' && (inputs.build_cli || inputs.build_android_gui) && (!inputs.build_cli || needs.build_cli.result == 'success') && (!inputs.build_android_gui || (needs.build_android_library.result == 'success' && needs.build_android.result == 'success')) }}
     permissions:
-      contents: write
+      actions: read
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
-
-      - name: Download all artifacts
+      - name: Download CLI artifacts
+        if: inputs.build_cli
         uses: actions/download-artifact@v8
         with:
+          pattern: binary-*
           path: artifacts
+          merge-multiple: true
 
-      - name: Generate oldstable-build-info.json
-        run: |
-          jq \
-            --arg version "${{ github.event.inputs.version }}" \
-            --arg built_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            --arg run_id "${{ github.run_id }}" \
-            '.version = $version | .built_at = $built_at | .run_id = $run_id' \
-            oldstable-build-info.json > updated-oldstable-build-info.json
-          mv updated-oldstable-build-info.json oldstable-build-info.json
-
-          VERSION=$(jq -r '.version' oldstable-build-info.json)
-          BUILT_AT=$(jq -r '.built_at' oldstable-build-info.json)
-          RUN_ID=$(jq -r '.run_id' oldstable-build-info.json)
-
-          {
-            echo "## sing-box v${VERSION}"
-            echo ""
-            echo "| Field | Value |"
-            echo "|---|---|"
-            echo "| Version | \`${VERSION}\` |"
-            echo "| sing-box Branch | [\`reF1nd-oldstable\`](https://github.com/reF1nd/sing-box/tree/reF1nd-oldstable) |"
-            echo "| Built At | ${BUILT_AT} |"
-            echo "| Run ID | [${RUN_ID}](https://github.com/${{ github.repository }}/actions/runs/${RUN_ID}) |"
-          } > release-notes.md
-
-      - name: Commit updated build-info
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add oldstable-build-info.json
-          git commit -m "Release v${{ github.event.inputs.version }}"
-          git pull --rebase
-          git push
-
-      - name: Delete existing tag and release if exists
-        run: |
-          TAG="v${{ github.event.inputs.version }}"
-          # 删除已有 Release（若存在）
-          RELEASE_ID=$(gh release view "$TAG" --json id -q '.id' 2>/dev/null || true)
-          if [ -n "$RELEASE_ID" ]; then
-            gh release delete "$TAG" --yes
-          fi
-          # 删除已有 tag（若存在）
-          if git ls-remote --tags origin "$TAG" | grep -q "$TAG"; then
-            git push origin ":refs/tags/$TAG"
-          fi
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Collect release files
-        run: |
-          mkdir -p release_files
-          find artifacts -type f | while read -r f; do
-            cp "$f" release_files/
-          done
-
-      - name: Create release
-        uses: softprops/action-gh-release@v3
+      - name: Download Android artifacts
+        if: inputs.build_android_gui
+        uses: actions/download-artifact@v8
         with:
-          tag_name: v${{ github.event.inputs.version }}
-          name: v${{ github.event.inputs.version }}
-          prerelease: ${{ github.event.inputs.publish_release == 'pre-release' }}
-          body_path: release-notes.md
-          files: release_files/*
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          pattern: android-apk-*
+          path: artifacts
+          merge-multiple: true
 
-      - name: Organize release files
+      - name: Generate build manifest
         run: |
-          mkdir -p release_files/sfa release_files/android release_files/others
-          mv release_files/SFA-* release_files/sfa/ 2>/dev/null || true
-          mv release_files/sing-box-*-android-* release_files/android/ 2>/dev/null || true
-          mv release_files/sing-box-* release_files/others/ 2>/dev/null || true
+          set -euo pipefail
+          {
+            while IFS= read -r -d '' file; do
+              relative_path=${file#artifacts/}
+              sha256=$(sha256sum "$file" | awk '{print $1}')
+              size=$(stat -c '%s' "$file")
+              jq -nc \
+                --arg path "$relative_path" \
+                --arg sha256 "$sha256" \
+                --argjson size "$size" \
+                '{path: $path, sha256: $sha256, size: $size}'
+            done < <(find artifacts -type f -print0 | sort -z)
+          } | jq -s 'sort_by(.path)' > artifact-files.json
 
-      - name: Post SFA to channel
-        uses: xireiki/channel-post@v2
-        with: 
-          chat_id: ${{ secrets.CHAT_ID }}
-          bot_token: ${{ secrets.BOT_TOKEN }}
-          path: release_files/sfa/*
-          context: "#oldstable\nSFA-${{ github.event.inputs.version }}"
-          parse_mode: HTML
-          large_file: true
-          api_id: ${{ secrets.API_ID }}
-          api_hash: ${{ secrets.API_HASH }}
-          method: sendFile
+          jq -n \
+            --arg workflow '.github/workflows/build-oldstable.yml' \
+            --arg repository "${{ github.repository }}" \
+            --arg head_branch "${{ github.ref_name }}" \
+            --arg head_sha "${{ github.sha }}" \
+            --arg version "${{ inputs.version }}" \
+            --arg source_sha "${{ needs.resolve_source.outputs.source_sha }}" \
+            --arg built_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --argjson run_id "${{ github.run_id }}" \
+            --argjson run_attempt "${{ github.run_attempt }}" \
+            --argjson build_cli "${{ inputs.build_cli }}" \
+            --argjson build_android_gui "${{ inputs.build_android_gui }}" \
+            --argjson build_windows_gui false \
+            --argjson build_linux_gui false \
+            --slurpfile artifact_files artifact-files.json \
+            '{
+              schema_version: 1,
+              workflow: $workflow,
+              repository: $repository,
+              head_branch: $head_branch,
+              head_sha: $head_sha,
+              run_id: $run_id,
+              run_attempt: $run_attempt,
+              version: $version,
+              source_sha: $source_sha,
+              built_at: $built_at,
+              build: {
+                cli: $build_cli,
+                android_gui: $build_android_gui,
+                windows_gui: $build_windows_gui,
+                linux_gui: $build_linux_gui
+              },
+              artifacts: $artifact_files[0]
+            }' > build-manifest.json
 
-    #  - name: Kill telegram-bot-api between posts
-    #    run: pkill -f telegram-bot-api || true
+          jq -e '.artifacts | length > 0' build-manifest.json >/dev/null
+          cat build-manifest.json
 
-      - name: Post sing-box-android to channel
-        uses: xireiki/channel-post@v2
-        with: 
-          chat_id: ${{ secrets.CHAT_ID }}
-          bot_token: ${{ secrets.BOT_TOKEN }}
-          path: release_files/android/*
-          context: "#oldstable\nsing-box-${{ github.event.inputs.version }}-android"
-          parse_mode: HTML
-          large_file: true
-          api_id: ${{ secrets.API_ID }}
-          api_hash: ${{ secrets.API_HASH }}
-          method: sendFile
+      - name: Attest build provenance
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
+        with:
+          subject-path: |
+            artifacts/**
+            build-manifest.json
 
-    #  - name: Kill telegram-bot-api between posts
-    #    run: pkill -f telegram-bot-api || true
+      - name: Upload build manifest
+        uses: actions/upload-artifact@v7
+        with:
+          name: build-manifest
+          path: build-manifest.json
 
-      - name: Post sing-box to channel
-        uses: xireiki/channel-post@v2
-        with: 
-          chat_id: ${{ secrets.CHAT_ID }}
-          bot_token: ${{ secrets.BOT_TOKEN }}
-          path: release_files/others/*
-          context: "#oldstable\nsing-box-${{ github.event.inputs.version }}"
-          parse_mode: HTML
-          large_file: true
-          api_id: ${{ secrets.API_ID }}
-          api_hash: ${{ secrets.API_HASH }}
-          method: sendFile
+  cache_gc:
+    name: Cache GC
+    if: always()
+    runs-on: ubuntu-latest
+    needs: finalize_build
+    permissions:
+      actions: write
+    steps:
+      - name: Delete superseded caches
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |-
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/caches?per_page=100" --paginate \
+            --jq '.actions_caches[] | [.id, .ref, .created_at, .last_accessed_at, .size_in_bytes, .key] | @tsv' > "$RUNNER_TEMP/caches.tsv"
+          python3 - "$GITHUB_REPOSITORY" "$RUNNER_TEMP/caches.tsv" <<'EOF'
+          import re
+          import subprocess
+          import sys
+
+          repository, list_path = sys.argv[1], sys.argv[2]
+          budget = 9 * 1024 * 1024 * 1024
+          rows = []
+          with open(list_path) as list_file:
+              for line in list_file:
+                  cache_id, ref, created_at, accessed_at, size, key = line.rstrip("\n").split("\t")
+                  family = key
+                  while True:
+                      stripped = re.sub(r"-[0-9a-f]{16,}$", "", family)
+                      if stripped == family:
+                          break
+                      family = stripped
+                  rows.append({
+                      "id": cache_id, "ref": ref, "created": created_at,
+                      "accessed": accessed_at, "size": int(size), "key": key,
+                      "family": family,
+                  })
+          newest = {}
+          for row in rows:
+              group = (row["ref"], row["family"])
+              if group not in newest or row["created"] > newest[group]["created"]:
+                  newest[group] = row
+          doomed = [row for row in rows if newest[(row["ref"], row["family"])] is not row]
+          kept = [row for row in rows if newest[(row["ref"], row["family"])] is row]
+          total = sum(row["size"] for row in kept)
+          for row in sorted(kept, key=lambda entry: entry["accessed"]):
+              if total <= budget:
+                  break
+              doomed.append(row)
+              total -= row["size"]
+          for row in doomed:
+              print(f"delete {row['size'] >> 20}MB {row['key']} ({row['ref']})")
+              subprocess.run(
+                  ["gh", "api", "-X", "DELETE", f"repos/{repository}/actions/caches/{row['id']}"],
+                  check=False,
+              )
+          print(f"kept {len(rows) - len(doomed)} caches, {total >> 20}MB total")
+          EOF

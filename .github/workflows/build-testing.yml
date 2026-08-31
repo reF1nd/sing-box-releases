@@ -36,8 +36,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  GO_VERSION: '1.26.7'
-  GO_VERSION_DARWIN: '1.26.7'
+  GO_VERSION: '1.27.4'
+  GO_VERSION_DARWIN: '1.27.4'
 
 jobs:
   resolve_source:
@@ -204,6 +204,28 @@ jobs:
             variant: purego
             artifact_name: binary-windows-amd64v3
             naive: true
+          - platform: windows
+            arch: amd64
+            os: ubuntu-26.04
+            goos: windows
+            goarch: amd64
+            goamd64: v1
+            binary: sing-box.exe
+            artifact_name: binary-windows-amd64-legacy-windows-7
+            legacy_win7: true
+            legacy_name: windows-7
+            naive: false
+          - platform: windows
+            arch: 386
+            os: ubuntu-26.04
+            goos: windows
+            goarch: 386
+            goamd64: ''
+            binary: sing-box.exe
+            artifact_name: binary-windows-386-legacy-windows-7
+            legacy_win7: true
+            legacy_name: windows-7
+            naive: false
           - platform: darwin
             arch: arm64
             os: macos-latest
@@ -311,7 +333,7 @@ jobs:
           cache: false
 
       - name: Setup Go
-        if: matrix.platform != 'darwin'
+        if: matrix.platform != 'darwin' && matrix.legacy_win7 != true
         uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
@@ -353,6 +375,26 @@ jobs:
           echo "PATH=$HOME/go/go_osx/bin:$PATH" >> "$GITHUB_ENV"
           echo "GOROOT=$HOME/go/go_osx" >> "$GITHUB_ENV"
 
+      - name: Cache Go for Windows 7
+        if: matrix.legacy_win7 == true
+        id: cache-go-for-windows7
+        uses: actions/cache@v5
+        with:
+          path: ~/go/go_win7
+          key: go-win7-${{ hashFiles('sing-box/.github/setup_go_for_windows7.sh') }}
+
+      - name: Setup Go for Windows 7
+        if: matrix.legacy_win7 == true && steps.cache-go-for-windows7.outputs.cache-hit != 'true'
+        run: sing-box/.github/setup_go_for_windows7.sh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Activate Go for Windows 7
+        if: matrix.legacy_win7 == true
+        run: |
+          echo "PATH=$HOME/go/go_win7/bin:$PATH" >> "$GITHUB_ENV"
+          echo "GOROOT=$HOME/go/go_win7" >> "$GITHUB_ENV"
+
       - name: Cache Go modules for Darwin
         if: matrix.platform == 'darwin'
         uses: actions/cache@v5
@@ -361,8 +403,8 @@ jobs:
           key: go-mod-macos-${{ hashFiles('sing-box/go.sum') }}
           restore-keys: go-mod-macos-
 
-      - name: Restore Go modules for Linux and Android
-        if: matrix.platform == 'linux' || matrix.platform == 'android'
+      - name: Restore Go modules for Linux runners
+        if: matrix.platform == 'linux' || matrix.platform == 'android' || matrix.legacy_win7 == true
         uses: actions/cache/restore@v5
         with:
           path: ~/go/pkg/mod
@@ -370,7 +412,7 @@ jobs:
           restore-keys: go-mod-linux-
 
       - name: Cache Go modules for Windows
-        if: matrix.platform == 'windows'
+        if: matrix.platform == 'windows' && matrix.legacy_win7 != true
         uses: actions/cache@v5
         with:
           path: ~/go/pkg/mod
@@ -436,17 +478,21 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "${{ matrix.platform }}" == "windows" ]]; then
+          if [[ "${{ matrix.legacy_win7 }}" == "true" ]]; then
+            TAGS=$(sed 's/,with_usbip//' sing-box/release/DEFAULT_BUILD_TAGS_OTHERS)
+          elif [[ "${{ matrix.platform }}" == "windows" ]]; then
             TAGS=$(cat sing-box/release/DEFAULT_BUILD_TAGS_WINDOWS)
           elif [[ "${{ matrix.naive }}" == "true" ]]; then
             TAGS=$(cat sing-box/release/DEFAULT_BUILD_TAGS)
+          elif [[ "${{ matrix.legacy_macos }}" == "true" ]]; then
+            TAGS=$(sed 's/,with_usbip//' sing-box/release/DEFAULT_BUILD_TAGS_OTHERS)
           else
             TAGS=$(cat sing-box/release/DEFAULT_BUILD_TAGS_OTHERS)
           fi
           if [[ "${{ matrix.naive }}" == "true" && "${TAGS}" != *with_naive_outbound* ]]; then
             TAGS="${TAGS},with_naive_outbound"
           fi
-          if [[ -d sing-box/common/ebpf && ("${{ matrix.platform }}" == "linux" || "${{ matrix.platform }}" == "android") && "${TAGS}" != *with_ebpf* ]]; then
+          if [[ -f sing-box/include/ebpf.go && ("${{ matrix.platform }}" == "linux" || "${{ matrix.platform }}" == "android") && "${TAGS}" != *with_ebpf* ]]; then
             TAGS="${TAGS},with_ebpf"
           fi
           ARCHIVE_SUFFIX=""
@@ -544,7 +590,7 @@ jobs:
           if [ -f libcronet.so ]; then rm -f libcronet.so; fi
 
       - name: Archive (Windows)
-        if: matrix.platform == 'windows'
+        if: matrix.platform == 'windows' && matrix.legacy_win7 != true
         shell: pwsh
         run: |
           cd sing-box/dist
@@ -559,6 +605,17 @@ jobs:
           Remove-Item -Recurse "$DIR_NAME"
           Remove-Item sing-box.exe
           if (Test-Path libcronet.dll) { Remove-Item libcronet.dll }
+
+      - name: Archive (Windows 7)
+        if: matrix.legacy_win7 == true
+        run: |
+          cd sing-box/dist
+          DIR_NAME="sing-box-${{ github.event.inputs.version }}-windows-${{ matrix.arch }}-legacy-${{ matrix.legacy_name }}"
+          mkdir -p "$DIR_NAME"
+          cp ../LICENSE "$DIR_NAME/"
+          cp sing-box.exe "$DIR_NAME/"
+          zip -r "$DIR_NAME.zip" "$DIR_NAME"
+          rm -rf "$DIR_NAME" sing-box.exe
 
       - name: Archive (Darwin)
         if: matrix.platform == 'darwin'
@@ -738,6 +795,17 @@ jobs:
           sed -i "s/^VERSION_NAME=.*/VERSION_NAME=${{ github.event.inputs.version }}/" "$file"
           grep '^VERSION_NAME=' "$file"
 
+      - name: Update GO_VERSION
+        run: |
+          set -euo pipefail
+          file="sing-box-for-android/version.properties"
+          if grep -q '^GO_VERSION=' "$file"; then
+            sed -i "s/^GO_VERSION=.*/GO_VERSION=go${GO_VERSION}/" "$file"
+          else
+            printf '\nGO_VERSION=go%s\n' "$GO_VERSION" >> "$file"
+          fi
+          grep '^GO_VERSION=' "$file"
+
       - name: Read version code from source
         run: |
           version_code=$(grep '^VERSION_CODE=' sing-box-for-android/version.properties | cut -d'=' -f2)
@@ -822,7 +890,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: reF1nd/sing-box-for-desktop
-          ref: reF1nd-main
+          ref: reF1nd-dev
           path: sing-box-for-desktop
           submodules: recursive
 
@@ -880,6 +948,7 @@ jobs:
           $versionPath = 'sing-box-for-desktop/version.json'
           $versionMetadata = Get-Content -Raw $versionPath | ConvertFrom-Json
           $versionMetadata.version = $env:DESKTOP_VERSION
+          $versionMetadata | Add-Member -NotePropertyName go_version -NotePropertyValue "go$($env:GO_VERSION)" -Force
           $versionMetadata | ConvertTo-Json -Depth 100 | Set-Content -Encoding utf8NoBOM $versionPath
           Get-Content $versionPath
         env:
@@ -942,12 +1011,15 @@ jobs:
           - desktop_arch: x64
             go_arch: amd64
             go_arm: ''
+            rust_target: x86_64-unknown-linux-gnu
           - desktop_arch: arm64
             go_arch: arm64
             go_arm: ''
+            rust_target: aarch64-unknown-linux-gnu
           - desktop_arch: armv7l
             go_arch: arm
             go_arm: '7'
+            rust_target: armv7-unknown-linux-gnueabihf
     steps:
       - name: Setup Go
         uses: actions/setup-go@v6
@@ -967,7 +1039,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: reF1nd/sing-box-for-desktop
-          ref: reF1nd-main
+          ref: reF1nd-dev
           path: sing-box-for-desktop
           submodules: recursive
 
@@ -985,6 +1057,26 @@ jobs:
           TAG="v${{ github.event.inputs.version }}"
           git tag -f "${TAG}" "${{ needs.resolve_source.outputs.source_sha }}"
 
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@1.88.0
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Cache Wayland menu module
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/git
+            ~/.cargo/registry
+            sing-box-for-desktop/bin/wayland-menu-toolchain
+          key: wayland-menu-${{ matrix.rust_target }}-${{ hashFiles('sing-box-for-desktop/native/wayland-menu/Cargo.lock') }}
+          restore-keys: wayland-menu-${{ matrix.rust_target }}-
+
       - name: Setup pnpm
         uses: pnpm/action-setup@v4.4.0
         with:
@@ -1001,8 +1093,8 @@ jobs:
 
       - name: Update version
         run: |
-          jq --arg version "$DESKTOP_VERSION" \
-            '.version = $version' \
+          jq --arg version "$DESKTOP_VERSION" --arg goVersion "go$GO_VERSION" \
+            '.version = $version | .go_version = $goVersion' \
             sing-box-for-desktop/version.json > "$RUNNER_TEMP/desktop-version.json"
           mv "$RUNNER_TEMP/desktop-version.json" sing-box-for-desktop/version.json
           cat sing-box-for-desktop/version.json
