@@ -1,4 +1,4 @@
-name: Build sing-box stable (Android and CLI)
+name: Build sing-box stable (Android, Windows, Linux, Darwin)
 
 on:
   workflow_dispatch:
@@ -20,14 +20,24 @@ on:
         required: false
         type: boolean
         default: true
+      build_windows_gui:
+        description: 'Build Windows GUI'
+        required: false
+        type: boolean
+        default: true
+      build_linux_gui:
+        description: 'Build Linux GUI'
+        required: false
+        type: boolean
+        default: true
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.version }}
   cancel-in-progress: true
 
 env:
-  GO_VERSION: '~1.25.12'
-  GO_VERSION_DARWIN: '^1.25.3'
+  GO_VERSION: '1.26.7'
+  GO_VERSION_DARWIN: '1.26.7'
 
 jobs:
   resolve_source:
@@ -436,6 +446,9 @@ jobs:
           if [[ "${{ matrix.naive }}" == "true" && "${TAGS}" != *with_naive_outbound* ]]; then
             TAGS="${TAGS},with_naive_outbound"
           fi
+          if [[ -d sing-box/common/ebpf && ("${{ matrix.platform }}" == "linux" || "${{ matrix.platform }}" == "android") && "${TAGS}" != *with_ebpf* ]]; then
+            TAGS="${TAGS},with_ebpf"
+          fi
           ARCHIVE_SUFFIX=""
 
           case "${{ matrix.variant }}" in
@@ -781,11 +794,341 @@ jobs:
           name: android-apk-${{ matrix.variant }}
           path: dist
 
+  build_windows_gui:
+    if: ${{ github.event.inputs.build_windows_gui == 'true' }}
+    name: Build Windows GUI (${{ matrix.desktop_arch }})
+    runs-on: windows-latest
+    needs: resolve_source
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - desktop_arch: x64
+            rust_target: x86_64-pc-windows-msvc
+          - desktop_arch: x86
+            rust_target: i686-pc-windows-msvc
+          - desktop_arch: arm64
+            rust_target: aarch64-pc-windows-msvc
+    steps:
+      - name: Checkout sing-box
+        uses: actions/checkout@v6
+        with:
+          repository: reF1nd/sing-box
+          ref: ${{ needs.resolve_source.outputs.source_sha }}
+          path: sing-box
+          fetch-depth: 1
+
+      - name: Checkout sing-box-for-desktop
+        uses: actions/checkout@v6
+        with:
+          repository: reF1nd/sing-box-for-desktop
+          ref: reF1nd-main
+          path: sing-box-for-desktop
+          submodules: recursive
+
+      - name: Set build tag
+        shell: pwsh
+        run: |
+          $tag = "v${{ github.event.inputs.version }}"
+          git -C sing-box tag -f $tag "${{ needs.resolve_source.outputs.source_sha }}"
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+
+      - name: Cache Go modules
+        uses: actions/cache@v5
+        with:
+          path: ~/go/pkg/mod
+          key: go-mod-desktop-windows-${{ hashFiles('sing-box/go.sum') }}
+          restore-keys: go-mod-desktop-windows-
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@1.88.0
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Cache Windows sharing module
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/git
+            ~/.cargo/registry
+            sing-box-for-desktop/bin/windows-share-toolchain/cargo-target
+          key: windows-share-${{ matrix.rust_target }}-${{ hashFiles('sing-box-for-desktop/native/windows-share/Cargo.lock') }}
+          restore-keys: windows-share-${{ matrix.rust_target }}-
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4.4.0
+        with:
+          package_json_file: sing-box-for-desktop/package.json
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: sing-box-for-desktop/package.json
+          cache: pnpm
+          cache-dependency-path: |
+            sing-box-for-desktop/pnpm-lock.yaml
+            sing-box-for-desktop/dashboard/pnpm-lock.yaml
+
+      - name: Update version
+        shell: pwsh
+        run: |
+          $versionPath = 'sing-box-for-desktop/version.json'
+          $versionMetadata = Get-Content -Raw $versionPath | ConvertFrom-Json
+          $versionMetadata.version = $env:DESKTOP_VERSION
+          $versionMetadata | ConvertTo-Json -Depth 100 | Set-Content -Encoding utf8NoBOM $versionPath
+          Get-Content $versionPath
+        env:
+          DESKTOP_VERSION: ${{ github.event.inputs.version }}
+
+      - name: Setup signing
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATES_P12)) {
+            throw 'WINDOWS_CERTIFICATES_P12 is not configured'
+          }
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_P12_PASSWORD)) {
+            throw 'WINDOWS_P12_PASSWORD is not configured'
+          }
+          $certificatePath = Join-Path $env:RUNNER_TEMP 'windows-signing.p12'
+          [IO.File]::WriteAllBytes($certificatePath, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATES_P12))
+          @{
+            windows = @{
+              certificateFile = $certificatePath
+              certificatePassword = $env:WINDOWS_P12_PASSWORD
+            }
+          } | ConvertTo-Json -Depth 3 | Set-Content -Encoding utf8NoBOM sing-box-for-desktop/signing.local.json
+        env:
+          WINDOWS_CERTIFICATES_P12: ${{ secrets.WINDOWS_CERTIFICATES_P12 }}
+          WINDOWS_P12_PASSWORD: ${{ secrets.WINDOWS_P12_PASSWORD }}
+
+      - name: Install dependencies
+        run: pnpm -C sing-box-for-desktop install
+
+      - name: Build
+        run: pnpm -C sing-box-for-desktop package:win -- ${{ matrix.desktop_arch }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Prepare upload
+        shell: pwsh
+        run: |
+          $artifacts = @(Get-ChildItem sing-box-for-desktop/release/SFW-*.exe -File)
+          if ($artifacts.Count -ne 1) {
+            throw "expected 1 Windows installer for ${{ matrix.desktop_arch }}, found $($artifacts.Count)"
+          }
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item $artifacts.FullName dist
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-gui-${{ matrix.desktop_arch }}
+          path: dist
+
+  build_linux_gui:
+    if: ${{ github.event.inputs.build_linux_gui == 'true' }}
+    name: Build Linux GUI ${{ matrix.desktop_arch }}
+    runs-on: ubuntu-26.04
+    needs: resolve_source
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - desktop_arch: x64
+            go_arch: amd64
+            go_arm: ''
+          - desktop_arch: arm64
+            go_arch: arm64
+            go_arm: ''
+          - desktop_arch: armv7l
+            go_arch: arm
+            go_arm: '7'
+    steps:
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+
+      - name: Checkout sing-box
+        uses: actions/checkout@v6
+        with:
+          repository: reF1nd/sing-box
+          ref: ${{ needs.resolve_source.outputs.source_sha }}
+          path: sing-box
+          fetch-depth: 1
+
+      - name: Checkout sing-box-for-desktop
+        uses: actions/checkout@v6
+        with:
+          repository: reF1nd/sing-box-for-desktop
+          ref: reF1nd-main
+          path: sing-box-for-desktop
+          submodules: recursive
+
+      - name: Cache Go modules
+        uses: actions/cache@v5
+        with:
+          path: ~/go/pkg/mod
+          key: go-mod-desktop-linux-${{ hashFiles('sing-box/go.sum') }}
+          restore-keys: go-mod-desktop-linux-
+
+      - name: Set build tag
+        run: |
+          set -xeuo pipefail
+          cd sing-box
+          TAG="v${{ github.event.inputs.version }}"
+          git tag -f "${TAG}" "${{ needs.resolve_source.outputs.source_sha }}"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4.4.0
+        with:
+          package_json_file: sing-box-for-desktop/package.json
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: sing-box-for-desktop/package.json
+          cache: pnpm
+          cache-dependency-path: |
+            sing-box-for-desktop/pnpm-lock.yaml
+            sing-box-for-desktop/dashboard/pnpm-lock.yaml
+
+      - name: Update version
+        run: |
+          jq --arg version "$DESKTOP_VERSION" \
+            '.version = $version' \
+            sing-box-for-desktop/version.json > "$RUNNER_TEMP/desktop-version.json"
+          mv "$RUNNER_TEMP/desktop-version.json" sing-box-for-desktop/version.json
+          cat sing-box-for-desktop/version.json
+        env:
+          DESKTOP_VERSION: ${{ github.event.inputs.version }}
+
+      - name: Clone cronet-go
+        run: |
+          set -xeuo pipefail
+          CRONET_GO_VERSION=$(cat sing-box/.github/CRONET_GO_VERSION)
+          git init ~/cronet-go
+          git -C ~/cronet-go remote add origin https://github.com/sagernet/cronet-go.git
+          git -C ~/cronet-go fetch --depth=1 origin "$CRONET_GO_VERSION"
+          git -C ~/cronet-go checkout FETCH_HEAD
+          git -C ~/cronet-go submodule update --init --recursive --depth=1
+
+      - name: Regenerate Debian keyring
+        run: |
+          set -xeuo pipefail
+          rm -f ~/cronet-go/naiveproxy/src/build/linux/sysroot_scripts/keyring.gpg
+          cd ~/cronet-go
+          GPG_TTY=/dev/null ./naiveproxy/src/build/linux/sysroot_scripts/generate_keyring.sh
+
+      - name: Download Chromium toolchain
+        run: |
+          set -xeuo pipefail
+          cd ~/cronet-go
+          go run ./cmd/build-naive --target=linux/${{ matrix.go_arch }} download-toolchain
+
+      - name: Set Chromium toolchain environment
+        run: |
+          set -xeuo pipefail
+          cd ~/cronet-go
+          go run ./cmd/build-naive --target=linux/${{ matrix.go_arch }} env >> "$GITHUB_ENV"
+
+      - name: Install package tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update || true
+          sudo apt-get install -y debsigs libarchive-tools rpm zstd
+          echo '%_rpmformat 4' > "$HOME/.rpmmacros"
+
+      - name: Install dependencies
+        run: pnpm -C sing-box-for-desktop install
+
+      - name: Build
+        run: pnpm -C sing-box-for-desktop package:linux -- deb rpm pacman ${{ matrix.desktop_arch }}
+        env:
+          CGO_ENABLED: '0'
+          GOARM: ${{ matrix.go_arm }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup package signing
+        run: |
+          set -euo pipefail
+          [[ -n "$GPG_KEY" ]] || { echo 'GPG_KEY is not configured' >&2; exit 1; }
+          [[ -n "$GPG_KEY_ID" ]] || { echo 'GPG_KEY_ID is not configured' >&2; exit 1; }
+          [[ -n "$GPG_PASSPHRASE" ]] || { echo 'GPG_PASSPHRASE is not configured' >&2; exit 1; }
+
+          SIGNING_GNUPG_HOME="$RUNNER_TEMP/package-signing-gnupg"
+          SIGNING_PASSPHRASE_FILE="$RUNNER_TEMP/package-signing-passphrase"
+          mkdir -m 700 "$SIGNING_GNUPG_HOME"
+          printf '%s' "$GPG_PASSPHRASE" > "$SIGNING_PASSPHRASE_FILE"
+          chmod 600 "$SIGNING_PASSPHRASE_FILE"
+          {
+            echo "GNUPGHOME=$SIGNING_GNUPG_HOME"
+            echo "SIGNING_PASSPHRASE_FILE=$SIGNING_PASSPHRASE_FILE"
+          } >> "$GITHUB_ENV"
+
+          printf '%s' "$GPG_KEY" | gpg \
+            --homedir "$SIGNING_GNUPG_HOME" \
+            --batch \
+            --pinentry-mode loopback \
+            --passphrase-file "$SIGNING_PASSPHRASE_FILE" \
+            --import
+          gpg --homedir "$SIGNING_GNUPG_HOME" \
+            --batch \
+            --list-secret-keys "$GPG_KEY_ID" >/dev/null
+
+          cat > "$HOME/.rpmmacros" <<EOF
+          %_gpg_name $GPG_KEY_ID
+          %_gpg_sign_cmd_extra_args --pinentry-mode loopback --passphrase-file $SIGNING_PASSPHRASE_FILE
+          EOF
+        env:
+          GPG_KEY: ${{ secrets.GPG_KEY }}
+          GPG_KEY_ID: ${{ secrets.GPG_KEY_ID }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+
+      - name: Sign Linux packages
+        run: |
+          set -euo pipefail
+          debsigs \
+            --sign=origin \
+            -k "$GPG_KEY_ID" \
+            --gpgopts "--batch --pinentry-mode loopback --passphrase-file $SIGNING_PASSPHRASE_FILE" \
+            sing-box-for-desktop/release/SFL-*.deb
+          rpmsign --addsign sing-box-for-desktop/release/SFL-*.rpm
+        env:
+          GPG_KEY_ID: ${{ secrets.GPG_KEY_ID }}
+
+      - name: Prepare upload
+        run: |
+          shopt -s nullglob
+          artifacts=(
+            sing-box-for-desktop/release/SFL-*.deb
+            sing-box-for-desktop/release/SFL-*.rpm
+            sing-box-for-desktop/release/SFL-*.pkg.tar.zst
+          )
+          if (( ${#artifacts[@]} != 3 )); then
+            echo "expected 3 Linux packages, found ${#artifacts[@]}" >&2
+            exit 1
+          fi
+          mkdir -p dist
+          cp "${artifacts[@]}" dist
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-gui-${{ matrix.desktop_arch }}
+          path: dist
+
   finalize_build:
     name: Finalize build artifacts
     runs-on: ubuntu-latest
-    needs: [resolve_source, build_cli, build_android_library, build_android]
-    if: ${{ always() && needs.resolve_source.result == 'success' && (inputs.build_cli || inputs.build_android_gui) && (!inputs.build_cli || needs.build_cli.result == 'success') && (!inputs.build_android_gui || (needs.build_android_library.result == 'success' && needs.build_android.result == 'success')) }}
+    needs: [resolve_source, build_cli, build_android_library, build_android, build_windows_gui, build_linux_gui]
+    if: ${{ always() && needs.resolve_source.result == 'success' && (inputs.build_cli || inputs.build_android_gui || inputs.build_windows_gui || inputs.build_linux_gui) && (!inputs.build_cli || needs.build_cli.result == 'success') && (!inputs.build_android_gui || (needs.build_android_library.result == 'success' && needs.build_android.result == 'success')) && (!inputs.build_windows_gui || needs.build_windows_gui.result == 'success') && (!inputs.build_linux_gui || needs.build_linux_gui.result == 'success') }}
     permissions:
       actions: read
       contents: read
@@ -806,6 +1149,22 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           pattern: android-apk-*
+          path: artifacts
+          merge-multiple: true
+
+      - name: Download Windows GUI artifacts
+        if: inputs.build_windows_gui
+        uses: actions/download-artifact@v8
+        with:
+          pattern: windows-gui-*
+          path: artifacts
+          merge-multiple: true
+
+      - name: Download Linux GUI artifacts
+        if: inputs.build_linux_gui
+        uses: actions/download-artifact@v8
+        with:
+          pattern: linux-gui-*
           path: artifacts
           merge-multiple: true
 
@@ -837,8 +1196,8 @@ jobs:
             --argjson run_attempt "${{ github.run_attempt }}" \
             --argjson build_cli "${{ inputs.build_cli }}" \
             --argjson build_android_gui "${{ inputs.build_android_gui }}" \
-            --argjson build_windows_gui false \
-            --argjson build_linux_gui false \
+            --argjson build_windows_gui "${{ inputs.build_windows_gui }}" \
+            --argjson build_linux_gui "${{ inputs.build_linux_gui }}" \
             --slurpfile artifact_files artifact-files.json \
             '{
               schema_version: 1,

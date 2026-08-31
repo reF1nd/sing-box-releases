@@ -10,6 +10,7 @@ on:
         options:
           - testing
           - stable
+          - oldstable
         default: testing
       build_run_id:
         description: 'Successful build workflow run ID'
@@ -62,6 +63,11 @@ jobs:
               workflow='.github/workflows/build-stable.yml'
               target_branch='reF1nd-stable'
               build_info_file='stable-build-info.json'
+              ;;
+            oldstable)
+              workflow='.github/workflows/build-oldstable.yml'
+              target_branch='reF1nd-oldstable'
+              build_info_file='oldstable-build-info.json'
               ;;
             *)
               echo "unsupported release channel: $CHANNEL" >&2
@@ -148,7 +154,7 @@ jobs:
               and (.build.android_gui | type == "boolean")
               and (.build.windows_gui | type == "boolean")
               and (.build.linux_gui | type == "boolean")
-              and ($channel == "testing" or
+              and (($channel == "testing" or $channel == "stable") or
                 (.build.windows_gui == false and .build.linux_gui == false))
               and (.artifacts | type == "array" and length > 0)
               and ((.artifacts | map(.path) | unique | length) == (.artifacts | length))
@@ -193,7 +199,7 @@ jobs:
           run-id: ${{ inputs.build_run_id }}
 
       - name: Download Windows GUI artifacts
-        if: inputs.channel == 'testing' && steps.manifest.outputs.build_windows_gui == 'true'
+        if: inputs.channel != 'oldstable' && steps.manifest.outputs.build_windows_gui == 'true'
         uses: actions/download-artifact@v8
         with:
           pattern: windows-gui-*
@@ -204,7 +210,7 @@ jobs:
           run-id: ${{ inputs.build_run_id }}
 
       - name: Download Linux GUI artifacts
-        if: inputs.channel == 'testing' && steps.manifest.outputs.build_linux_gui == 'true'
+        if: inputs.channel != 'oldstable' && steps.manifest.outputs.build_linux_gui == 'true'
         uses: actions/download-artifact@v8
         with:
           pattern: linux-gui-*
@@ -390,7 +396,7 @@ jobs:
           method: sendFile
 
       - name: Post SFW to channel
-        if: inputs.channel == 'testing' && steps.manifest.outputs.build_windows_gui == 'true'
+        if: inputs.channel != 'oldstable' && steps.manifest.outputs.build_windows_gui == 'true'
         uses: xireiki/channel-post@v2
         with:
           chat_id: ${{ secrets.CHAT_ID }}
@@ -404,7 +410,7 @@ jobs:
           method: sendFile
 
       - name: Post SFL to channel
-        if: inputs.channel == 'testing' && steps.manifest.outputs.build_linux_gui == 'true'
+        if: inputs.channel != 'oldstable' && steps.manifest.outputs.build_linux_gui == 'true'
         uses: xireiki/channel-post@v2
         with:
           chat_id: ${{ secrets.CHAT_ID }}
